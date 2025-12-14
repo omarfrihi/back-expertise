@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  fake-news-api:
+    build: .
+    container_name: fake-news-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./model:/app/model # Persist models on host
+      - ./data:/app/data # Optional: map dataset if needed
+      - ./output:/app/output # Persist models on host
+
+    command: >
+      bash -c "
+      python train.py &&
+      uvicorn api:app --host 0.0.0.0 --port 8000
+      "
