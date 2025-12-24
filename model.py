@@ -2,58 +2,88 @@ import os
 import joblib
 from openai import OpenAI
 
-# Load trained vectorizer and model
-vectorizer = joblib.load("model/vectorizer.joblib")
-model = joblib.load("model/classifier.joblib")
+# =====================================================
+# 1. Load trained ML pipeline (vectorizer + model)
+# =====================================================
+pipeline = joblib.load("model/fake_news_pipeline.joblib")
 
-# Initialize OpenAI client
-client = OpenAI(api_key="")
+# =====================================================
+# 2. Initialize OpenAI client (API key from env)
+# =====================================================
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# =====================================================
+# 3. ChatGPT justification (structured output)
+# =====================================================
 def chatgpt_justification(text: str):
     """
-    Returns a tuple (found: bool, justification: str) using ChatGPT
+    Returns a tuple (verdict: str, justification: str)
+    Verdict is one of: TRUE, FALSE, UNCERTAIN
     """
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-5.2-chat-latest",
-            messages=[
-                {"role": "system", "content": "You are a fact-checking assistant. include in response true and false"},
-                {"role": "user", "content": f"Verify this claim and provide a justification: {text}"}
-            ]
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a fact-checking assistant. "
+                        "Respond STRICTLY in this format:\n\n"
+                        "VERDICT: TRUE | FALSE | UNCERTAIN\n"
+                        "JUSTIFICATION: <short explanation>"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Verify the following claim:\n{text}"
+                }
+            ],
         )
-        answer = response.choices[0].message.content.strip()
-        # Consider found if answer contains TRUE or FALSE
-        found = "TRUE" in answer.upper() or "FALSE" in answer.upper()
-        return found, answer
-    except Exception as e:
-        return False, f"ChatGPT API error: {str(e)}"
 
+        answer = response.output_text.strip()
+
+        # Parse verdict safely
+        if "VERDICT: TRUE" in answer:
+            verdict = "TRUE"
+        elif "VERDICT: FALSE" in answer:
+            verdict = "FALSE"
+        else:
+            verdict = "UNCERTAIN"
+
+        return verdict, answer
+
+    except Exception as e:
+        return "UNCERTAIN", f"OpenAI API error: {str(e)}"
+
+# =====================================================
+# 4. Main fact-checking function
+# =====================================================
 def fact_check(text: str):
     """
-    Returns a dictionary with verdict, confidence, and ChatGPT justification
+    Returns ML verdict + confidence + LLM justification
     """
-    # Predict fake/real
-    X = vectorizer.transform([text])
-    probs = model.predict_proba(X)[0]
-    
-    fake_prob = probs[0]  # label 0
-    real_prob = probs[1]  # label 1
+    # ---- ML prediction ----
+    probs = pipeline.predict_proba([text])[0]
 
-    confidence = max(fake_prob, real_prob)
+    fake_prob = probs[0]
+    real_prob = probs[1]
+
+    confidence = float(max(fake_prob, real_prob))
 
     if confidence < 0.6:
-        verdict = "UNCERTAIN"
+        ml_verdict = "UNCERTAIN"
     elif real_prob > fake_prob:
-        verdict = "TRUE"
+        ml_verdict = "TRUE"
     else:
-        verdict = "FALSE"
+        ml_verdict = "FALSE"
 
-    # Get ChatGPT justification
-    found, justification = chatgpt_justification(text)
+    # ---- LLM justification (only if useful) ----
+    llm_verdict, justification = chatgpt_justification(text)
 
     return {
-        "verdict": verdict,
+        "verdict": ml_verdict,
         "confidence": round(confidence, 2),
-        "chatgpt_found": found,
+        "llm_verdict": llm_verdict,
         "justification": justification
     }
+

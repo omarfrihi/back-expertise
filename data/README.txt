@@ -1,1 +1,0 @@
-Place train_news.csv from Kaggle here before building the Docker image.

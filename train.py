@@ -1,128 +1,124 @@
-import os
-import re
-import random
+
+from sklearn.model_selection import train_test_split, cross_val_score
 import pandas as pd
-import joblib
-import matplotlib
-matplotlib.use("Agg")  # Use non-interactive backend for Docker
-import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.svm import LinearSVC
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    classification_report,
-    confusion_matrix,
-    ConfusionMatrixDisplay
+from preprocessing.preprocessing import load_and_prepare_data
+from pipeline.pipeline import build_pipeline
+from evaluation.evaluation import evaluate_model
+from visualization.visualization import (
+    save_test_metrics,
+    save_classification_report,
+    save_cv_accuracy,
+    save_confusion_matrix,
+    save_roc_curve,
+    save_pr_curve,
+    save_top_words,
+    save_learning_curve
 )
+from utils.utils import create_folders, save_model
 
-from sklearn.model_selection import cross_val_score
+# =========================================================
+# 1. Setup
+# =========================================================
+create_folders()
 
-# -------------------------
-# Helper functions
-# -------------------------
-def clean_text(text):
-    """Lowercase, remove URLs, punctuation, numbers, and extra spaces"""
-    text = str(text).lower()
-    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
-    text = re.sub(r"[^a-z\s]", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+# =========================================================
+# 2. Load & prepare data
+# =========================================================
+df = load_and_prepare_data("data/train_news.csv")
 
-def add_noise(text, prob=0.65):
-    """Randomly replace words with 'xxxx' to reduce model accuracy"""
-    words = text.split()
-    for i in range(len(words)):
-        if random.random() < prob:
-            words[i] = "xxxx"
-    return " ".join(words)
-
-# -------------------------
-# Setup folders
-# -------------------------
-os.makedirs("model", exist_ok=True)
-os.makedirs("output", exist_ok=True)  # for plots
-os.makedirs("data", exist_ok=True)    # for saving test data
-
-# -------------------------
-# Load dataset
-# -------------------------
-df = pd.read_csv("data/train_news.csv")
-df["content"] = (df.get("headline","").fillna("") + " " + df.get("news","").fillna("")).str.strip()
-df = df[["content","label"]].dropna()
-
-# Optionally clean text
-# df["content"] = df["content"].apply(clean_text)
-
-# -------------------------
-# Train/test split
-# -------------------------
+# =========================================================
+# 3. Train / Test split
+# =========================================================
 X_train, X_test, y_train, y_test = train_test_split(
-    df["content"], df["label"], test_size=0.2, random_state=42
+    df["content"],
+    df["label"],
+    test_size=0.2,
+    random_state=42,
+    stratify=df["label"]
 )
 
-# -------------------------
-# Save test data
-# -------------------------
-X_test_df = pd.DataFrame({"content": X_test, "label": y_test})
-X_test_df.to_csv("data/test_news.csv", index=False)
-print("Test data saved as 'data/test_news.csv'")
+pd.DataFrame({"content": X_test, "label": y_test}).to_csv(
+    "data/test_news.csv", index=False
+)
 
-# -------------------------
-# Vectorization
-# -------------------------
-vectorizer = TfidfVectorizer(max_features=2000, stop_words="english", ngram_range=(1,2))
-X_train_vec = vectorizer.fit_transform(X_train)
-X_test_vec = vectorizer.transform(X_test)
+# =========================================================
+# 4. Build & train model
+# =========================================================
+pipeline = build_pipeline()
+pipeline.fit(X_train, y_train)
 
-# -------------------------
-# Train model
-# -------------------------
-svm = LinearSVC()
-model = CalibratedClassifierCV(svm)  # get probabilities
-model.fit(X_train_vec, y_train)
+# =========================================================
+# 5. Evaluation
+# =========================================================
+metrics, y_pred, y_proba = evaluate_model(pipeline, X_test, y_test)
 
-# -------------------------
-# Evaluate
-# -------------------------
-y_pred = model.predict(X_test_vec)
+# =========================================================
+# 6. Cross-validation
+# =========================================================
+cv_scores = cross_val_score(
+    pipeline,
+    df["content"],
+    df["label"],
+    cv=5,
+    scoring="accuracy"
+)
 
-acc = accuracy_score(y_test, y_pred)
-precision = precision_score(y_test, y_pred, average='weighted')
-recall = recall_score(y_test, y_pred, average='weighted')
-f1 = f1_score(y_test, y_pred, average='weighted')
+# =========================================================
+# 7. Visualizations (ALL)
+# =========================================================
+save_test_metrics(
+    metrics["accuracy"],
+    metrics["precision"],
+    metrics["recall"],
+    metrics["f1"],
+    "output/test_metrics.png"
+)
 
-print(f"Accuracy:  {acc:.4f}")
-print(f"Precision: {precision:.4f}")
-print(f"Recall:    {recall:.4f}")
-print(f"F1-score:  {f1:.4f}")
+save_classification_report(
+    y_test,
+    y_pred,
+    "output/classification_report.png"
+)
 
-print("\nClassification Report:\n")
-print(classification_report(y_test, y_pred))
+save_cv_accuracy(
+    cv_scores,
+    "output/cv_accuracy.png"
+)
 
-# -------------------------
-# Confusion Matrix
-# -------------------------
+save_confusion_matrix(
+    pipeline,
+    X_test,
+    y_test,
+    "output/confusion_matrix.png"
+)
 
-scores = cross_val_score(model, vectorizer.transform(df["content"]), df["label"], cv=5, scoring='accuracy')
-print("Cross-validation accuracy:", scores)
-print("Mean accuracy:", scores.mean())
+save_roc_curve(
+    y_test,
+    y_proba,
+    "output/roc_curve.png"
+)
 
-cm = confusion_matrix(y_test, y_pred)
-disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=model.classes_)
-disp.plot(cmap=plt.cm.Blues)
-plt.title("Confusion Matrix")
-plt.savefig("output/confusion_matrix.png")  # saved inside Docker container
-print("Confusion matrix saved as 'output/confusion_matrix.png'")
+save_pr_curve(
+    y_test,
+    y_proba,
+    "output/precision_recall_curve.png"
+)
 
-# -------------------------
-# Save model and vectorizer
-# -------------------------
-joblib.dump(vectorizer, "model/vectorizer.joblib")
-joblib.dump(model, "model/classifier.joblib")
-print("Model and vectorizer saved in 'model/' folder")
+save_top_words(
+    pipeline,
+    "output/top_true_words.png",
+    "output/top_false_words.png"
+)
+
+save_learning_curve(
+    pipeline,
+    df["content"],
+    df["label"],
+    "output/learning_curve.png"
+)
+
+# =========================================================
+# 8. Save model
+# =========================================================
+save_model(pipeline, "model/fake_news_pipeline.joblib")
